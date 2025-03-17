@@ -1,2 +1,5 @@
 Pensum
 .venv
+.vscode
+__pycache__
+secret.txt
