@@ -24,9 +24,7 @@ class DatabaseConnector:
             self.password = password
 
         if database is None:
-            with self.login(create=True) as connection:
-                self.create_database(connection, self.database)
-        self.connection = self.login()
+            self.create_database(self.database)
 
     def login(self, create: bool = False) -> mysql.connector.MySQLConnection:
         try:
@@ -41,16 +39,15 @@ class DatabaseConnector:
                     host="localhost"
                 )
         except mysql.connector.Error as err:
-            print("Kunne ikke forbinde til databasen. Følgende fejl opstod:\n", err)
+            print("FEJL: Kunne ikke forbinde til databasen. Følgende fejl opstod:\n", err)
             return
         except:
             print("Ukendt fejl.")
             return
 
-        print(f"SUCCES: Forbundet til {self.database}")
         return connection
 
-    def create_database(self, cnx: mysql.connector.MySQLConnection, database_name: str) -> None:
+    def create_database(self, database_name: str) -> None:
         # if ';' in name:
         #     print("Illegal name! Can't contain ';'!")
         #     quit()
@@ -58,10 +55,11 @@ class DatabaseConnector:
         #     if f"{word} " in name.upper():
         #         print(f"Illegal name! Can't contain MySQL reserved word {word}!")
         #         quit()
-        database_query = "CREATE DATABASE IF NOT EXISTS {}".format(database_name)
-        with cnx.cursor() as cursor:
+        with self.login(create=True) as connection:
+            database_query = "CREATE DATABASE IF NOT EXISTS {}".format(database_name)
+            cursor = connection.cursor()
             cursor.execute(database_query)
 
 if __name__ == "__main__":
     connection = DatabaseConnector()
-    print(connection.connection)
+    print(connection.login())

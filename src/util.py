@@ -4,7 +4,7 @@ data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
 
 def read_csv(filename: str, data_dir: str = data_dir) -> list[str]:
     try:
-        with open(os.path.join(data_dir, filename), "r", encoding="UTF-8") as file:
+        with open(os.path.join(data_dir, filename), 'r', encoding="utf-8") as file:
             raw_data = file.readlines()
     except FileNotFoundError:
         print(f"Filen '{os.path.join(data_dir, filename)}' eksisterer ikke.")
