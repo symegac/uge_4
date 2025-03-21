@@ -262,6 +262,7 @@ class Database(connector.DatabaseConnector):
     def read(self,
         table_name: str,
         *column_name: str,
+        joins: list[dict[str]] = [],
         order: int | str = 0,
         direction: str = 'a',
         limit: int = 0,
@@ -303,19 +304,36 @@ class Database(connector.DatabaseConnector):
         select_params = {}
 
         select_query = "SELECT "
+        # Hvis antallet af kolonner angivet er > 0,
+        # vælges kun de angivne kolonner
         if column_name:
-            select_query += ", ".join([f"`{column}`" for column in column_name])
+            columns = []
+            for column in column_name:
+                if '.' in column:
+                    split_column = column.split('.')
+                    columns.append(f"`{split_column[0]}`.`{split_column[1]}`")
+                else:
+                    columns.append(f"`{column}`")
+            select_query += ", ".join(columns)
+        # Eller vælges alle kolonner
         else:
             select_query += '*'
         select_query += f" FROM `{table_name}`"
 
+        # Tilføjer join(s)
+        if joins:
+            for join in joins:
+                select_query += self._join(left=table_name, **join)
+
         # Tilføjer sorteringsretning
-        select_query += self._sort(select_query, column_name, order, direction)
+        if order:
+            select_query += self._sort(column_name, order, direction)
 
         # Tilføjer limit og offset
-        limit_query, limit_params = self._limit(select_query, limit, offset)
-        select_query += limit_query
-        select_params.update(limit_params)
+        if limit or offset:
+            limit_query, limit_params = self._limit(limit, offset)
+            select_query += limit_query
+            select_params.update(limit_params)
 
         self._preview(select_query)
 
@@ -324,7 +342,22 @@ class Database(connector.DatabaseConnector):
             print(f"SUCCES: Dataene blev læst fra '{table_name}' problemfrit.")
             return result
 
-    def _sort(self, query: str, column_name: str | tuple[str], order: int | str = 0, direction: str = 'a') -> str:
+    def _sort(self, column_name: str | tuple[str], order: int | str = 0, direction: str = 'a') -> str:
+        """
+        _summary_
+
+        :param column_name: _description_
+        :type column_name: str | tuple[str]
+        :param order: _description_
+            Standardværdi: ``0``
+        :type order: int | str, optional
+        :param direction: _description_,
+            Standardværdi: ``'a'``
+        :type direction: str, optional
+
+        :return: _description_
+        :rtype: str
+        """
         query = ""
         if isinstance(order, int) and order >= 0 and order < len(column_name):
             query += f" ORDER BY `{column_name[order]}`"
@@ -338,8 +371,21 @@ class Database(connector.DatabaseConnector):
 
         return query
 
-    def _limit(self, query: str, limit: int, offset: int) -> tuple[str, dict[str]]:
-        query = ""
+    def _limit(self, limit: int, offset: int = 0) -> tuple[str, dict[str]]:
+        """
+        Konstruerer LIMIT- og OFFSET-delen af et query.
+
+        :param limit: Begrænser antal læste rækker til et bestemt antal.
+        :type limit: int
+        :param offset: Bestemmer, hvor mange rækker, der springes over,
+            inden læsning påbegyndes.
+            *Upåkrævet*. Standardværdi: ``0``
+        :type offset: int
+        :return: En tuple bestående af en tekststreng til queriet,
+            samt en dict med parametre til eksekveringen af queriet.
+        :rtype: tuple[str, dict[str]]
+        """
+        query = ''
         params = {}
         if isinstance(limit, int) and limit > 0:
             query += " LIMIT %(limit)s"
@@ -350,37 +396,51 @@ class Database(connector.DatabaseConnector):
 
         return query, params
 
-    def info(self, table_name: str) -> list[tuple] | None:
+    def info(self, table_name: str = '') -> list[tuple] | None:
         """
-        Henter info om en tabels opbygning.
+        Henter info om databasens eller en tabels opbygning.
 
         :param table_name: Navnet på tabellen, hvis info efterspørges.
-            *Påkrævet*.
+            Hvis navnet er tomt, hentes info om databasen.
+            *Påkrævet*. Standardværdi: ``''``
         :type table_name: str
 
         :return: En liste indeholdende info om hver kolonne i tabellen, herunder navn og datatype.
         :rtype: list[tuple]
-        :return: Hvis READ_operationen ikke kunne gennemføres,
+        :return: En liste indeholdende info om hver tabel i databasen, herunder navn.
+        :rtype: list[tuple]
+        :return: Hvis READ-operationen ikke kunne gennemføres.
         :rtype: None
         """
-        describe_query = f"DESCRIBE `{table_name}`"
+        describe_query = ''
+        if table_name:
+            describe_query = f"DESCRIBE `{table_name}`"
+        elif self.connection.database is not None:
+            describe_query = "SHOW TABLES"
+
+        if not describe_query:
+            return
 
         self._preview(describe_query)
 
         table_info = self._execute(describe_query, read=True)
         if table_info:
-            print(f"SUCCES: Hentede info om tabellen '{table_name}'.")
+            if table_name:
+                print(f"SUCCES: Hentede info om tabellen '{table_name}'.")
+            else:
+                print(f"SUCCES: Hentede info om databasen '{self.database}'.")
             return table_info
 
-    # Opretter enten en samlet tabel eller returnerer
     def _join(self,
         left: str,
         right: str,
         on_left: str,
         on_right: str,
-        type: str = 'i',
-    ) -> list[tuple] | None:
+        join_type: str = 'i',
+    ) -> str:
         """
+        Konstruerer JOIN-delen af et query
+
         :param left: Den venstre tabel.
             *Påkrævet*.
         :type left: str
@@ -398,8 +458,35 @@ class Database(connector.DatabaseConnector):
             ``"inner"``, ``"outer"``, ``"left"`` eller ``"right"``.
             *Påkrævet*. Standardværdi: ``'i'``
         :type direction: str
+
+        :return: JOIN-delen af et query.
+        :rtype: str
+        :return: Hvis de to tabeller ikke kunne joines.
+        :rtype: str: ``''``
         """
-        pass
+        tables = [table[0] for table in self.info()]
+        for table in [left, right]:
+            if table not in tables:
+                print(f"Tabellen '{table}' findes ikke i databasen")
+                return ''
+        left_columns = [column[0] for column in self.info(left)]
+        right_columns = [column[0] for column in self.info(right)]
+        if on_left not in left_columns or on_right not in right_columns:
+            return ''
+
+        join_query = ' '
+        if join_type in ['i', "inner"]:
+            join_query += "INNER "
+        elif join_type in ['o', "outer"]:
+            join_query += "OUTER "
+        elif join_type in ['l', "left"]:
+            join_query += "LEFT "
+        elif join_type in ['r', "right"]:
+            join_query += "RIGHT "
+
+        join_query += f"JOIN `{right}` ON `{left}`.`{on_left}` = `{right}`.`{on_right}`"
+
+        return join_query
 
     # UPDATE-operationer
     def update(self) -> None:
@@ -478,18 +565,31 @@ class Database(connector.DatabaseConnector):
                 self.login()
 
 if __name__ == "__main__":
-    database = Database(database="testdb", username="root", password=open("secret.txt", "r", encoding="utf-8").readline())
-    tables = ["orders.csv", "customers.csv", "products.csv"]
-    for table in tables:
-        raw_data = util.read_csv(table)
-        table_name = util.get_name(table)
-        database.create(raw_data[0], table_name)
-        database.insert(raw_data, table_name)
-    database.logout()
-    database.login()
-    print(database.info("customers"))
-    print(database.read("customers", "id", "email", order=1, direction='d', limit=10, offset=23))
-    database.reset()
+    database = Database(database="testdb", username="root", password=open("secret.txt", "r", encoding="utf-8").readline(), preview=False)
+    # tables = ["orders.csv", "customers.csv", "products.csv"]
+    # for table in tables:
+    #     raw_data = util.read_csv(table)
+    #     table_name = util.get_name(table)
+    #     database.create(raw_data[0], table_name)
+    #     database.insert(raw_data, table_name)
+    # database.logout()
+    # database.login()
+    # print(database.info("customers"))
+    # print(database.read("customers", "id", "email", order=1, direction='d', limit=10, offset=23))
+    first_join = {
+        "right": "customers",
+        "on_left": "customer",
+        "on_right": "id",
+        "join_type": 'i'
+    }
+    second_join = {
+        "right": "products",
+        "on_left": "product",
+        "on_right": "id",
+        "join_type": 'i'
+    }
+    print(database.read("orders", "orders.id", "customers.name", "products.name", joins=[first_join, second_join]))
+    # database.reset()
     database.logout()
 
 
