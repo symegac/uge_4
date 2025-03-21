@@ -1,29 +1,32 @@
 import util
 import connector
 import getpass
-import datetime
-import decimal
+# import datetime
+# import decimal
 
 class Database(connector.DatabaseConnector):
     """
-    >>> Database("root", "hunter2", "testdb")
-
-    :param username:
+    :param username: Brugernavnet, der skal bruges til at logge ind med.
         *Påkrævet*. Standardværdi: ``''``
     :type username: str
     :param password:
         *Påkrævet*. Standardværdi: ``''``
     :type password: str
-    :param database: 
+    :param database: Navnet på databasen, der evt. skal forbindes til.
         *Upåkrævet*. Standardværdi: ``''``
     :type database: str
+    :param init_load: Adgangskoden, der skal bruges til at logge ind med.
+        *Upåkrævet*. Standardværdi: ``[]``
+    :type init_load: list[str]
     :param preview: Bestemmer, om queries skal forhåndsvises inden eksekvering.
         *Upåkrævet*. Standardværdi: ``True``
+    :type preview: bool
     """
     def __init__(self,
         username: str = '',
         password: str = '',
         database: str = '',
+        init_load: list[str] = [],
         preview: bool = True
     ) -> None:
         """
@@ -33,14 +36,19 @@ class Database(connector.DatabaseConnector):
         self.preview = preview
         # Initialiserer connectoren
         super().__init__(username, password, database)
+
         # Hvis forbindelsen ikke kan skabes (f.eks. fordi det angivne databasenavn ikke eksisterer),
-        # kan brugeren forsøge at oprette en database med navnet.
+        # kan brugeren forsøge at oprette en database med navnet
         if self.database and not self.connection:
             new = input(f"Vil du forsøge at oprette en ny database med navnet '{self.database}'? (j/N): ")
             if new.lower() == 'j':
                 self.create_database(self.database)
                 # Skal logge ind igen for at forny forbindelserne
                 self._first_login(getpass.getpass("Indtast adgangskode igen: "))
+
+        # Loader tabeller til databasen fra start, hvis nogen oplyses
+        if self.connection and init_load:
+            self.load(*init_load)
 
     def _execute(self,
         query: str,
@@ -99,6 +107,13 @@ class Database(connector.DatabaseConnector):
             return True
 
     def _preview(self, query: str) -> None:
+        """
+        Viser et preview at queriet, der skal til at køres.
+
+        :param query: Queriet, der skal til at køres.
+            *Påkrævet*.
+        :type query: str
+        """
         if self.preview:
             msg = " > " + query
             title = "Forhåndsvisning af forespørgsel:"
@@ -123,39 +138,63 @@ class Database(connector.DatabaseConnector):
         if self._execute(database_query, db=False):
             print(f"SUCCES: Databasen '{database_name}' blev oprettet.")
 
-    def create(self, columns: str, table_name: str = "table") -> None:
+    def create(self,
+        columns: str,
+        table_name: str = "table",
+        primary_key: str = '',
+        foreign_key: dict[str] = {}
+    ) -> None:
+        """
+        Opretter en ny tabel ud fra de angivne oplysninger.
+
+        :param columns: _description_
+        :type columns: str
+        :param table_name: _description_, defaults to "table"
+        :type table_name: str, optional
+        :param primary_key: _description_, defaults to ''
+        :type primary_key: str, optional
+        :param foreign_key: _description_, defaults to {}
+        :type foreign_key: dict, optional
+        """
         header = columns.strip('\n').split(',')
 
         # TODO: Omskriv denne del
         create_query = f"CREATE TABLE `{table_name}` ("
         # Gætter datatype ud fra kolonnenavn
-        # Primary key vil ud fra de tre datasæt altid være et heltalligt id
-        # Men det kan også være, at den skal gættes, hvis man vil kunne bruge f.eks. et navn som nøgle
-        # Og et datasæt behøver jo ikke engang at have en primary key
         # Men det vile måske være smartere at gætte ud fra felternes værdi fra første række
+        # For dette gælde kun for de tre datasæt til opgaven
         # Det kommer an på, om man følger en fast navngivningspraksis for kolonnerne i datasættene
         for column in header:
             create_query += f"`{column}` "
             if column == "id":
-                create_query += "INTEGER NOT NULL PRIMARY KEY, "
+                create_query += "INTEGER NOT NULL"
             elif "name" in column:
-                create_query += "VARCHAR(80) NOT NULL, "
+                create_query += "VARCHAR(80) NOT NULL"
             elif "email" in column:
-                create_query += "VARCHAR(254) NOT NULL, "
+                create_query += "VARCHAR(254) NOT NULL"
             elif "price" in column:
                 # For dette datasæt er (P=8,D=5) i DECIMAL(P,D)
                 # Men for pengebeløb burde D vel egentlig være 2
-                create_query += "DECIMAL(10,5) NOT NULL, "
+                create_query += "DECIMAL(10,5) NOT NULL"
             elif "date" in column:
-                create_query += "DATETIME NOT NULL, "
+                create_query += "DATETIME NOT NULL"
             elif column in ["customer", "product"]:
-                create_query += "INTEGER NOT NULL, "
+                create_query += "INTEGER NOT NULL"
+
+            # if column == primary_key:
+            #     create_query += " PRIMARY KEY"
+            create_query += ", "
         create_query = create_query[:-2] + ')'
 
         self._preview(create_query)
 
         if self._execute(create_query):
             print(f"SUCCES: Oprettede tabellen '{table_name}'.")
+        
+        # if primary_key:
+        #     self.primary_key(table_name, primary_key)
+        # if foreign_key:
+        #     self.foreign_key(table_name, foreign_key)
 
     # TODO: Forsøg at matche kolonnenavne fra dataens header med kolonnenavne fra den valgte tabel
     # TODO: Implementér et system til at skippe eller overwrite, hvis et felt i en række i datasættet
@@ -258,7 +297,20 @@ class Database(connector.DatabaseConnector):
         self.create(header, table_name)
         self.insert(body, table_name, header=False)
 
+    def load(self, *tables: str) -> None:
+        """
+        Indlæser data fra de(n) angivne fil(er) og opretter en tabel i databasen for hver af dem.
+
+        :param tables: En eller flere filer, der skal laves en tabel af.
+        :type tables: str
+        """
+        for table in tables:
+            raw_data = util.read_csv(table)
+            table_name = util.get_name(table)
+            self.new_table(raw_data, table_name)
+
     # READ-operationer
+    # TODO: Tilføj en måde, hvorpå foreign keys kan bruges til at joine eller læse data fra andre tabeller
     def read(self,
         table_name: str,
         *column_name: str,
@@ -272,11 +324,20 @@ class Database(connector.DatabaseConnector):
         Læser data fra en tabel.
 
         :param table_name: Navnet på den tabel, som data skal læses fra.
-            *Påkrævet*
+            *Påkrævet*.
         :type table_name: str
         :param column_name: Navnet eller navnene på den kolonne eller de kolonner, som data skal læses fra.
             *Upåkrævet*.
         :type column_name: str
+        :param joins: En liste med en dict indeholdende parametrene for hvert join, der skal indsættes i queriet.
+            Et join har som regel formen ``{
+                "right": tabel_2,
+                "on_left": kolonne_1,
+                "on_right": kolonne_2.
+                "join_type": JOIN-type
+            }`` i brug, men parameteren ``"left"`` kan også oplyses om nødvendigt.
+            *Upåkrævet*. Standardværdi: ``[]``
+        :type joins: list[dict[str]]
         :param order: Kolonnen, som resultatet ordnes efter.
             Enten *int*, der vælger indekset af kolonnen blandt de valgte kolonner,
             eller *str*, der vælger ud fra navnet på kolonnen.
@@ -325,6 +386,8 @@ class Database(connector.DatabaseConnector):
             for join in joins:
                 select_query += self._join(left=table_name, **join)
 
+        # TODO: Tilføj WHERE (og medhørende keywords, såsom AND, OR, LIKE, IN osv.?s)
+
         # Tilføjer sorteringsretning
         if order:
             select_query += self._sort(column_name, order, direction)
@@ -344,18 +407,22 @@ class Database(connector.DatabaseConnector):
 
     def _sort(self, column_name: str | tuple[str], order: int | str = 0, direction: str = 'a') -> str:
         """
-        _summary_
+        Konstruerer ORDER BY- og ASC/DESC-delen af et query.
 
-        :param column_name: _description_
+        :param column_name: Navnet på kolonne(r)n(e), der er valgt og kan sorteres efter.
         :type column_name: str | tuple[str]
-        :param order: _description_
-            Standardværdi: ``0``
+        :param order: Kolonnen, som resultatet ordnes efter.
+            Enten *int*, der vælger indekset af kolonnen blandt de valgte kolonner,
+            eller *str*, der vælger ud fra navnet på kolonnen.
+            *Upåkrævet*. Standardværdi: ``0``
         :type order: int | str, optional
-        :param direction: _description_,
-            Standardværdi: ``'a'``
+        :param direction:  Angiver hvilken retning, resultatet skal ordnes i.
+            ``'a'``, ``"asc"`` eller ``"ascending"`` er opadgående rækkefølge, mens
+            ``'d'``, ``"desc"`` eller ``"descending"`` er nedadgående rækkefølge.
+            *Upåkrævet*. Standardværdi: ``'a'``
         :type direction: str, optional
 
-        :return: _description_
+        :return: ORDER BY-delen af et query.
         :rtype: str
         """
         query = ""
@@ -381,6 +448,7 @@ class Database(connector.DatabaseConnector):
             inden læsning påbegyndes.
             *Upåkrævet*. Standardværdi: ``0``
         :type offset: int
+
         :return: En tuple bestående af en tekststreng til queriet,
             samt en dict med parametre til eksekveringen af queriet.
         :rtype: tuple[str, dict[str]]
@@ -396,41 +464,7 @@ class Database(connector.DatabaseConnector):
 
         return query, params
 
-    def info(self, table_name: str = '') -> list[tuple] | None:
-        """
-        Henter info om databasens eller en tabels opbygning.
-
-        :param table_name: Navnet på tabellen, hvis info efterspørges.
-            Hvis navnet er tomt, hentes info om databasen.
-            *Påkrævet*. Standardværdi: ``''``
-        :type table_name: str
-
-        :return: En liste indeholdende info om hver kolonne i tabellen, herunder navn og datatype.
-        :rtype: list[tuple]
-        :return: En liste indeholdende info om hver tabel i databasen, herunder navn.
-        :rtype: list[tuple]
-        :return: Hvis READ-operationen ikke kunne gennemføres.
-        :rtype: None
-        """
-        describe_query = ''
-        if table_name:
-            describe_query = f"DESCRIBE `{table_name}`"
-        elif self.connection.database is not None:
-            describe_query = "SHOW TABLES"
-
-        if not describe_query:
-            return
-
-        self._preview(describe_query)
-
-        table_info = self._execute(describe_query, read=True)
-        if table_info:
-            if table_name:
-                print(f"SUCCES: Hentede info om tabellen '{table_name}'.")
-            else:
-                print(f"SUCCES: Hentede info om databasen '{self.database}'.")
-            return table_info
-
+    # TODO: Lav måske en slags auto-join ud fra foreign keys
     def _join(self,
         left: str,
         right: str,
@@ -439,7 +473,7 @@ class Database(connector.DatabaseConnector):
         join_type: str = 'i',
     ) -> str:
         """
-        Konstruerer JOIN-delen af et query
+        Konstruerer JOIN-delen af et query.
 
         :param left: Den venstre tabel.
             *Påkrævet*.
@@ -488,13 +522,110 @@ class Database(connector.DatabaseConnector):
 
         return join_query
 
+    def info(self, table_name: str = '') -> list[tuple] | None:
+        """
+        Henter info om databasens eller en tabels opbygning.
+
+        :param table_name: Navnet på tabellen, hvis info efterspørges.
+            Hvis navnet er tomt, hentes info om databasen.
+            *Påkrævet*. Standardværdi: ``''``
+        :type table_name: str
+
+        :return: En liste indeholdende info om hver kolonne i tabellen, herunder navn og datatype.
+        :rtype: list[tuple]
+        :return: En liste indeholdende info om hver tabel i databasen, herunder navn.
+        :rtype: list[tuple]
+        :return: Hvis READ-operationen ikke kunne gennemføres.
+        :rtype: None
+        """
+        describe_query = ''
+        if table_name:
+            describe_query = f"DESCRIBE `{table_name}`"
+        elif self.connection.database is not None:
+            describe_query = "SHOW TABLES"
+
+        if not describe_query:
+            return
+
+        self._preview(describe_query)
+
+        table_info = self._execute(describe_query, read=True)
+        if table_info:
+            if table_name:
+                print(f"SUCCES: Hentede info om tabellen '{table_name}'.")
+            else:
+                print(f"SUCCES: Hentede info om databasen '{self.database}'.")
+            return table_info
+
     # UPDATE-operationer
-    def update(self) -> None:
+    def update(self,
+        table_name: str,
+        where: str,
+        old_value,
+        change: str,
+        new_value
+    ) -> None:
+        """
+        _summary_
+
+        :param table_name: Tabellen, hvori data skal opdateres.
+        :type table_name: str
+        :param where: Kolonnen, hvor WHERE tjekkes.
+        :type where: str
+        :param old_value: Værdien, der tjekkes efter i WHERE.
+        :type old_value: Any
+        :param change: Kolonnen, hvor værdien ændres.
+        :type change: str
+        :param new_value: Værdien, der ændres til.
+        :type new_value: Any
+        """
+        # UPDATE TABLE table_name
+        # SET change = new_value
+        # WHERE where = old_value
         pass
 
+    def add(self, table_name: str, column_name: str, datatype: str) -> None:
+        # ALTER TABLE table_name ADD colum_name datatype
+        pass
+
+    def modify(self, table_name: str, column_name: str, datatype: str) -> None:
+        # ALTER TABLE table_name MODIFY COLUMN column_name datatype
+        pass
+
+    def primary_key(self, table_name: str, column_name: str) -> None:
+        alter_query = f"ALTER TABLE `{table_name}` ADD PRIMARY KEY (`{column_name}`)"
+
+        self._preview(alter_query)
+        if self._execute(alter_query):
+            print(f"SUCCES: Tilføjede kolonnen '{column_name}' som primary key for tabellen '{table_name}'")
+
+    def foreign_key(self, table_name: str, foreign_key: dict[str]) -> None:
+        alter_queries = []
+        for key in foreign_key:
+            split_key = foreign_key[key].split('.')
+            alter_query = f"ALTER TABLE `{table_name}` "
+            alter_query += f"ADD FOREIGN KEY (`{key}`) REFERENCES `{split_key[0]}`(`{split_key[1]}`)"
+            alter_queries.append(alter_query)
+
+        for query in alter_queries:
+            self._preview(query)
+            if self._execute(query):
+                print(f"SUCCES: Tilføjede foreign key til tabellen '{table_name}'.")
+
+
     # DELETE-operationer
-    # 
-    def delete(self, table_name: str, force: bool = False) -> None:
+    def delete(self, table_name: str, where: str, value: str) -> None:
+        # DELETE FROM table_name WHERE where = value
+        # if not where and not value:
+        #   DELETE FROM table_name
+        # (langsommere end TRUNCATE / self.empty(),
+        # fordi det gemmer til transaktionsloggen og kan rulles tilbage)
+        pass
+
+    # TODO: DROP kan også bruges på en hel database eller en kolonne:
+    # DROP DATABASE database
+    # ALTER TABLE table_name DROP COLUMN column_name
+    def drop(self, table_name: str, force: bool = False) -> None:
         """
         Fjerner en tabel helt fra databasen.
 
@@ -509,10 +640,9 @@ class Database(connector.DatabaseConnector):
 
         self._preview(drop_query)
 
-        # Det er altid godt at bekræfte ved delete-operationer
-        if not force:
-            confirmation = input(f"Er du sikker på, at du gerne vil fjerne tabellen '{table_name}' fuldstændigt? (j/N) ")
-        if force or confirmation.lower() == 'j':
+        # Det er altid godt at bekræfte ved DELETE-operationer
+        confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
+        if force or input(confirmation).lower() == 'j':
             # Hvis query gennemføres problemfrit, printes positivt resultat
             if self._execute(drop_query):
                 print(f"SUCCES: Tabellen '{table_name}' blev fjernet.")
@@ -532,10 +662,9 @@ class Database(connector.DatabaseConnector):
 
         self._preview(truncate_query)
 
-        # Det er altid godt at bekræfte ved delete-operationer
-        if not force:
-            confirmation = input(f"Er du sikker på, at du gerne vil rydde tabellen '{table_name}' for data? (j/N) ")
-        if force or confirmation.lower() == 'j':
+        # Det er altid godt at bekræfte ved DELETE-operationer
+        confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
+        if force or input(confirmation).lower() == 'j':
             # Hvis query genneføres problemfrit, printes positivt resultat
             if self._execute(truncate_query):
                 print(f"SUCCES: Tabellen '{table_name}' blev ryddet for data.")
@@ -554,55 +683,17 @@ class Database(connector.DatabaseConnector):
 
         self._preview(drop_query)
 
-        # Det er altid godt at bekræfte ved delete-operationer
-        if not force:
-            confirmation = input(f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) ")
-        if force or confirmation.lower() == 'j':
+        # Det er altid godt at bekræfte ved DELETE-operationer
+        confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
+        if force or input(confirmation).lower() == 'j':
             # Hvis begge queries gennemføres problemfrit, printes positivt resultat
             if self._execute(drop_query) and self.create_database(self.database):
                 print(f"Databasen '{self.database}' blev nulstillet.")
                 # Skal logge ind igen for at forny forbindelserne
                 self.login()
 
+def main() -> None:
+    pass
+
 if __name__ == "__main__":
-    database = Database(database="testdb", username="root", password=open("secret.txt", "r", encoding="utf-8").readline(), preview=False)
-    # tables = ["orders.csv", "customers.csv", "products.csv"]
-    # for table in tables:
-    #     raw_data = util.read_csv(table)
-    #     table_name = util.get_name(table)
-    #     database.create(raw_data[0], table_name)
-    #     database.insert(raw_data, table_name)
-    # database.logout()
-    # database.login()
-    # print(database.info("customers"))
-    # print(database.read("customers", "id", "email", order=1, direction='d', limit=10, offset=23))
-    first_join = {
-        "right": "customers",
-        "on_left": "customer",
-        "on_right": "id",
-        "join_type": 'i'
-    }
-    second_join = {
-        "right": "products",
-        "on_left": "product",
-        "on_right": "id",
-        "join_type": 'i'
-    }
-    print(database.read("orders", "orders.id", "customers.name", "products.name", joins=[first_join, second_join]))
-    # database.reset()
-    database.logout()
-
-
-# Måske kunne man lave en Table class og så loade hver tabel ind i konstruktøren som
-# self.orders, self.customers, self.products, osv.
-# Table kunne så nedarve CRUD-operationerne
-# (i modificeret udgave uden parameteren table_name selvfølgelig og med nogle func som attribut)
-# Så ville man kunne sige testdb.orders.info eller testdb.customers.empty()
-# eller testdb.products.create("color")
-# Så ville det være smart at lave et objekt for hver kolonne,
-# så man kunne sige testdb.orders.product.distinct(),
-# og man ville kunne sige testdb.customers.customer_email[11]
-# for at få emailadressen på kunden for ordre-id 11, hvis noget er gået galt med ordren
-# Eller testdb.products[3] for at få hele rækken om produkt-id 3,
-# eller testdb.products[3][2] alias testdb.products[3]["price"] for at få prisen
-# Og nu begynder det at ligne pandas
+    main()
