@@ -6,16 +6,20 @@ import getpass
 
 class Database(connector.DatabaseConnector):
     """
+    Et objekt, der er forbundet til en MySQL-instans og som regel en database heri,
+    og som kan interagere med databasen og tabellerne, som den indeholder.
+
     :param username: Brugernavnet, der skal bruges til at logge ind med.
         *Påkrævet*. Standardværdi: ``''``
     :type username: str
-    :param password:
+    :param password: Adgangskoden, der skal bruges til at logge ind med.
         *Påkrævet*. Standardværdi: ``''``
     :type password: str
     :param database: Navnet på databasen, der evt. skal forbindes til.
         *Upåkrævet*. Standardværdi: ``''``
     :type database: str
-    :param init_load: Adgangskoden, der skal bruges til at logge ind med.
+    :param init_load: En liste over datafiler, der ved initialisering automatisk skal
+        indlæses som tabeller i databasen.
         *Upåkrævet*. Standardværdi: ``[]``
     :type init_load: list[str]
     :param preview: Bestemmer, om queries skal forhåndsvises inden eksekvering.
@@ -31,6 +35,23 @@ class Database(connector.DatabaseConnector):
     ) -> None:
         """
         Konstruktøren af database-objektet.
+
+        :param username: Brugernavnet, der skal bruges til at logge ind med.
+        *Påkrævet*. Standardværdi: ``''``
+        :type username: str
+        :param password: Adgangskoden, der skal bruges til at logge ind med.
+            *Påkrævet*. Standardværdi: ``''``
+        :type password: str
+        :param database: Navnet på databasen, der evt. skal forbindes til.
+            *Upåkrævet*. Standardværdi: ``''``
+        :type database: str
+        :param init_load: En liste over datafiler, der ved initialisering automatisk skal
+            indlæses som tabeller i databasen.
+            *Upåkrævet*. Standardværdi: ``[]``
+        :type init_load: list[str]
+        :param preview: Bestemmer, om queries skal forhåndsvises inden eksekvering.
+            *Upåkrævet*. Standardværdi: ``True``
+        :type preview: bool
         """
         # Konfiguration
         self.preview = preview
@@ -41,7 +62,7 @@ class Database(connector.DatabaseConnector):
         # kan brugeren forsøge at oprette en database med navnet
         if self.database and not self.connection:
             new = input(f"Vil du forsøge at oprette en ny database med navnet '{self.database}'? (j/N): ")
-            if new.lower() == 'j':
+            if new.lower() in ['j', 'y']:
                 self.create_database(self.database)
                 # Skal logge ind igen for at forny forbindelserne
                 self._first_login(getpass.getpass("Indtast adgangskode igen: "))
@@ -58,6 +79,8 @@ class Database(connector.DatabaseConnector):
     ) -> bool | list[tuple]:
         """
         Eksekverer et SQL-query.
+
+        Hvis flere query-parametergrupper ('params') sendes med i en liste, gentages queriet for hver af disse.
 
         :param query: Queriet, der skal eksekveres. Skal skrives i SQL.
             *Påkrævet*.
@@ -110,6 +133,8 @@ class Database(connector.DatabaseConnector):
         """
         Viser et preview at queriet, der skal til at køres.
 
+        For at fortsætte eksekveringen, skal brugeren trykke på Enter.
+
         :param query: Queriet, der skal til at køres.
             *Påkrævet*.
         :type query: str
@@ -121,6 +146,28 @@ class Database(connector.DatabaseConnector):
             print(title)
             input(msg)
             print('-' * max(len(msg), len(title)))
+
+    def _format_column(self, column_name: str) -> str:
+        """
+        Formaterer en reference til en kolonne korrekt med backticks.
+
+        Hvis referencen indeholder et punktum, f.eks. hvis kolonner fra flere tabeller indgår i et query,
+        sættes backticks rundt om hver enkelt del af kolonnenavnet.
+
+        :param column_name: Kolonnenavnet/-referencen, der skal formateres.
+            *Påkrævet*.
+        :type column_name: str
+        :return: Den formaterede kolonnereference.
+        :rtype: str
+        """
+        column_parts = []
+        # Opdeler navn med flere dele
+        split_column = column_name.split('.') if '.' in column_name else [column_name]
+        # Sætter backticks omkring hver enkelt del
+        for column_part in split_column:
+            column_parts.append(f"`{column_part}`")
+        # Returnerede den samlede reference
+        return '.'.join(column_parts)
 
     # CREATE-operationer
     def create_database(self, database_name: str) -> None:
@@ -135,6 +182,7 @@ class Database(connector.DatabaseConnector):
 
         self._preview(database_query)
 
+        # Hvis eksekveringen gennemføres, vises besked
         if self._execute(database_query, db=False):
             print(f"SUCCES: Databasen '{database_name}' blev oprettet.")
 
@@ -190,9 +238,9 @@ class Database(connector.DatabaseConnector):
 
         if self._execute(create_query):
             print(f"SUCCES: Oprettede tabellen '{table_name}'.")
-        
-        # if primary_key:
-        #     self.primary_key(table_name, primary_key)
+
+        if primary_key:
+            self.primary_key(table_name, primary_key)
         # if foreign_key:
         #     self.foreign_key(table_name, foreign_key)
 
@@ -251,12 +299,11 @@ class Database(connector.DatabaseConnector):
         # Danner dict over parametre til indsættelse af data
         insert_params = []
         for row in rows:
-            insert_param = {column[0]: row[index] for index, column in enumerate(table_info)}
             # Konverterer str til passende datatype
+            # Koverteringen lader til at være spild af tid,
+            # da værdiene også omdannes til de rette typer,
+            # hvis man bare indsætter tekst...
             # for index, column in enumerate(table_info):
-                # Koverteringen lader til at være spild af tid,
-                # da værdiene også omdannes til de rette typer,
-                # hvis man bare indsætter tekst...
                 # insert_param[column[0]] = row[index]
                 # Kun de to første værdier (navn og type) tages fra kolonneinfoen
                 # column_name, column_type, *_ = column
@@ -272,6 +319,8 @@ class Database(connector.DatabaseConnector):
                 # elif "decimal" in column_type:
                 #     value = decimal.Decimal(row[index])
                 # insert_param[column_name] = value
+            # Ny, forenklet måde
+            insert_param = {column[0]: row[index] for index, column in enumerate(table_info)}
             insert_params.append(insert_param)
 
         self._preview(insert_query)
@@ -279,9 +328,12 @@ class Database(connector.DatabaseConnector):
         if self._execute(insert_query, insert_params):
             print(f"SUCCES: Data indsat i tabellen '{table_name}'.")
 
-    # TODO: Ikke afprøvet endnu
     def new_table(self, data: list[str], table_name: str = "table", header: str = '') -> None:
         """
+        Opretter en ny tabel og indsætter data i den.
+
+        Svarer til at bruge ``.create()`` efterfulgt af ``.insert()``.
+
         :param data: Dataene, der danner grundlag for den nye tabel.
             *Påkrævet*.
         :type data: list[str]
@@ -370,11 +422,7 @@ class Database(connector.DatabaseConnector):
         if column_name:
             columns = []
             for column in column_name:
-                if '.' in column:
-                    split_column = column.split('.')
-                    columns.append(f"`{split_column[0]}`.`{split_column[1]}`")
-                else:
-                    columns.append(f"`{column}`")
+                columns.append(self._format_column(column))
             select_query += ", ".join(columns)
         # Eller vælges alle kolonner
         else:
@@ -389,8 +437,8 @@ class Database(connector.DatabaseConnector):
         # TODO: Tilføj WHERE (og medhørende keywords, såsom AND, OR, LIKE, IN osv.?s)
 
         # Tilføjer sorteringsretning
-        if order:
-            select_query += self._sort(column_name, order, direction)
+        # quickfix: (sættes nu altid på queriet, da joins sorteres efter nyligst joinede tabel?)
+        select_query += self._sort(column_name, order, direction)
 
         # Tilføjer limit og offset
         if limit or offset:
@@ -426,10 +474,11 @@ class Database(connector.DatabaseConnector):
         :rtype: str
         """
         query = ""
+        # Formaterer nu kolonnenavne i tilfælde af database.tabel.kolonne-format
         if isinstance(order, int) and order >= 0 and order < len(column_name):
-            query += f" ORDER BY `{column_name[order]}`"
+            query += f" ORDER BY {self._format_column(column_name[order])}"
         elif isinstance(order, str) and order in column_name:
-            query += f" ORDER BY `{order}`"
+            query += f" ORDER BY {self._format_column(order)}]"
         if "ORDER BY" in query:
             if direction.lower() in ['a', "asc", "ascending"]:
                 query += " ASC"
@@ -501,7 +550,7 @@ class Database(connector.DatabaseConnector):
         tables = [table[0] for table in self.info()]
         for table in [left, right]:
             if table not in tables:
-                print(f"Tabellen '{table}' findes ikke i databasen")
+                print(f"Tabellen '{table}' findes ikke i databasen.")
                 return ''
         left_columns = [column[0] for column in self.info(left)]
         right_columns = [column[0] for column in self.info(right)]
@@ -642,11 +691,11 @@ class Database(connector.DatabaseConnector):
 
         # Det er altid godt at bekræfte ved DELETE-operationer
         confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
-        if force or input(confirmation).lower() == 'j':
+        if force or input(confirmation).lower() in ['j', 'y']:
             # Hvis query gennemføres problemfrit, printes positivt resultat
             if self._execute(drop_query):
                 print(f"SUCCES: Tabellen '{table_name}' blev fjernet.")
-    
+
     def empty(self, table_name: str, force: bool = False) -> None:
         """
         Rydder en tabel for al data, men fjerner ikke tabellen.
@@ -664,7 +713,7 @@ class Database(connector.DatabaseConnector):
 
         # Det er altid godt at bekræfte ved DELETE-operationer
         confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
-        if force or input(confirmation).lower() == 'j':
+        if force or input(confirmation).lower() in ['j', 'y']:
             # Hvis query genneføres problemfrit, printes positivt resultat
             if self._execute(truncate_query):
                 print(f"SUCCES: Tabellen '{table_name}' blev ryddet for data.")
@@ -685,7 +734,7 @@ class Database(connector.DatabaseConnector):
 
         # Det er altid godt at bekræfte ved DELETE-operationer
         confirmation = f"Er du sikker på, at du gerne vil nulstille databasen '{self.database}'? (j/N) "
-        if force or input(confirmation).lower() == 'j':
+        if force or input(confirmation).lower() in ['j', 'y']:
             # Hvis begge queries gennemføres problemfrit, printes positivt resultat
             if self._execute(drop_query) and self.create_database(self.database):
                 print(f"Databasen '{self.database}' blev nulstillet.")
