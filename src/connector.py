@@ -2,6 +2,7 @@ import mysql.connector
 import getpass
 
 # TODO: Kan i fremtiden udvides til også at benyttes til andre servere end localhost
+# TODO: Tilføj måde at prøve login igen, hvis forbindelse ikke kunne oprettes pga. forkert logininfo
 class DatabaseConnector:
     """
     Henter og gemmer loginoplysninger til en serverforbindelse, evt. en specifik database,
